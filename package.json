@@ -1,15 +1,18 @@
+
 {
-  "name": "789club-tracker",
-  "version": "1.0.0",
-  "description": "Công cụ lấy kết quả Tài Xỉu từ 789club qua WebSocket và cung cấp API HTTP",
+  "name": "789club-tracker-fixed",
+  "version": "2.0.0",
+  "description": "Công cụ lấy kết quả Tài Xỉu từ 789club - Đã sửa địa chỉ websocket2",
   "main": "789club.js",
   "scripts": {
     "start": "node 789club.js"
   },
   "dependencies": {
-    "websocket": "^1.0.34"
+    "websocket": "^1.0.35"
   },
-  "keywords": ["taixiu", "789club", "websocket", "api"],
+  "engines": {
+    "node": ">=16.0.0"
+  },
   "author": "@tranhoang2286",
   "license": "MIT"
 }
