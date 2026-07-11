@@ -2,8 +2,7 @@ const WebSocket = require('websocket').client;
 const http = require('http');
 
 // ================== CẤU HÌNH & BIẾN TOÀN CỤC ==================
-const PORT = 10000;
-
+const PORT = process.env.PORT || 10000;
 let latestResult = {
   "Ket_qua": "Chưa có kết quả",
   "Phien": 0,
@@ -13,21 +12,23 @@ let latestResult = {
   "Xuc_xac_3": 0,
   "id": "@tranhoang2286"
 };
-
 let lastEventId = 19;
 let wsClient = null;
 let wsConnection = null;
+let reconnectAttempts = 0;
+const MAX_RECONNECT = 10;
 
 // Cấu hình kết nối
 const WS_URL = "wss://websocket.atpman.net/websocket";
 const HEADERS = {
   "Host": "websocket.atpman.net",
   "Origin": "https://play.789club.sx",
-  "User-Agent": "Mozilla/5.0",
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
   "Accept-Encoding": "gzip, deflate, br, zstd",
   "Accept-Language": "vi-VN,vi;q=0.9",
   "Pragma": "no-cache",
-  "Cache-Control": "no-cache"
+  "Cache-Control": "no-cache",
+  "Connection": "Upgrade"
 };
 
 // Tin nhắn gửi đi
@@ -41,44 +42,36 @@ const LOGIN_MESSAGE = [
     "signature": "55A3202A0554F20C01D09CD018386265C93B292E843BE3722766912A8F01ACF50E9574D88D52FAFDABEBD4794D3306C87021EF3DD6B25DA102872D23C7C31A0F1D3EB99C0714968A64F6C40335726EB999F1CEAE49BC0954EABA48189E1BBE61BD40C898CA4D683DA76E24386F4431772D05BC8142DAEBFA90E27A9C250A5ED3"
   }
 ];
-
 const SUBSCRIBE_TX_RESULT = [6, "MiniGame", "taixiuUnbalancedPlugin", {"cmd": 2000}];
 const SUBSCRIBE_LOBBY = [6, "MiniGame", "lobbyPlugin", {"cmd": 10001}];
 
 // ================== HÀM HỖ TRỢ ==================
 function printJsonPretty(data, label = "") {
-  if (label) {
-    console.log("\n" + "=".repeat(50));
-    console.log(`📋 ${label}`);
-    console.log("=".repeat(50));
-  }
-  try {
-    if (typeof data === 'object') {
-      console.log(JSON.stringify(data, null, 2, 'utf8'));
-    } else {
-      console.log(data);
-    }
-  } catch (err) {
-    console.log(data);
-  }
+  if (label) console.log("\n" + "=".repeat(50), `📋 ${label}`, "=".repeat(50), sep="\n");
+  try { console.log(typeof data === 'object' ? JSON.stringify(data, null, 2, 'utf8') : data); }
+  catch (err) { console.log(data); }
 }
 
 // ================== WEBSOCKET XỬ LÝ ==================
 function startWebSocket() {
+  if (reconnectAttempts >= MAX_RECONNECT) {
+    console.log("❌ Đã đạt số lần kết nối tối đa, dừng thử lại!");
+    return;
+  }
+  reconnectAttempts++;
   wsClient = new WebSocket();
 
   wsClient.on('connect', (connection) => {
     console.log("✅ Đã kết nối WebSocket thành công");
     wsConnection = connection;
+    reconnectAttempts = 0;
 
     connection.on('message', (message) => {
       if (message.type === 'utf8') {
         try {
           const rawText = message.utf8Data;
-          printJsonPretty(`📥 NHẬN: ${rawText.substring(0, 500)}...`, "TIN NHẮN GỐC");
-
+          printJsonPretty(rawText.substring(0, 800), "📥 TIN NHẮN GỐC");
           const data = JSON.parse(rawText);
-          printJsonPretty(data, "ĐÃ PHÂN TÍCH");
 
           // Cập nhật lastEventId
           if (Array.isArray(data) && data.length >= 3 && data[0] === 7 && data[1] === "Simms" && typeof data[2] === "number") {
@@ -87,14 +80,14 @@ function startWebSocket() {
             console.log(`🆔 Cập nhật ID sự kiện: ${oldId} → ${lastEventId}`);
           }
 
-          // Xử lý kết quả Tài Xỉu
+          // Xử lý kết quả Tài Xỉu đúng cấu trúc
           if (Array.isArray(data)) {
-            for (const item of data) {
+            data.forEach(item => {
               if (item && typeof item === 'object' && item.cmd === 2006) {
                 const sid = item.sid || 0;
-                const d1 = item.d1 || 0;
-                const d2 = item.d2 || 0;
-                const d3 = item.d3 || 0;
+                const d1 = Number(item.d1 || 0);
+                const d2 = Number(item.d2 || 0);
+                const d3 = Number(item.d3 || 0);
                 const tong = d1 + d2 + d3;
                 const ketqua = tong >= 11 ? "Tài" : "Xỉu";
 
@@ -107,104 +100,71 @@ function startWebSocket() {
                   "Xuc_xac_3": d3,
                   "id": "@tranhoang2286"
                 };
-
                 console.log("🎲 CẬP NHẬT KẾT QUẢ MỚI:");
                 printJsonPretty(latestResult);
               }
-              // Thông tin Lobby
-              else if (item && typeof item === 'object' && item.cmd === 10001) {
-                console.log("🏛️ Nhận dữ liệu phòng chơi");
-              }
-            }
+            });
           }
-
-        } catch (err) {
-          console.log("❌ Lỗi phân tích JSON:", err.message);
-          console.log("📄 Nội dung:", message.utf8Data.substring(0, 200));
-        }
+        } catch (err) { console.log("❌ Lỗi phân tích JSON:", err.message); }
       }
     });
 
     connection.on('close', (code, desc) => {
-      console.log("🔌 Kết nối WebSocket đã đóng");
-      console.log(`   Mã: ${code} | Thông báo: ${desc}`);
-      console.log("🔄 Tự động kết nối lại sau 5 giây...");
-      setTimeout(startWebSocket, 5000);
+      console.log(`🔌 Đóng kết nối | Mã: ${code} | Thông báo: ${desc}`);
+      console.log(`🔄 Kết nối lại sau ${5*reconnectAttempts} giây...`);
+      setTimeout(startWebSocket, 5000 * reconnectAttempts);
     });
 
-    connection.on('error', (err) => {
-      console.log("❌ Lỗi kết nối:", err);
-    });
+    connection.on('error', err => console.log("❌ Lỗi kết nối:", err));
 
-    // Gửi dữ liệu khởi tạo sau khi kết nối
+    // Gửi dữ liệu khởi tạo
     setTimeout(() => {
-      console.log("📤 Gửi yêu cầu đăng nhập...");
+      console.log("📤 Đăng nhập...");
       connection.sendUTF(JSON.stringify(LOGIN_MESSAGE));
-
       setTimeout(() => {
-        console.log("📤 Đăng ký nhận kết quả Tài Xỉu...");
+        console.log("📤 Đăng ký nhận kết quả...");
         connection.sendUTF(JSON.stringify(SUBSCRIBE_TX_RESULT));
-        console.log("📤 Đăng ký thông tin phòng...");
         connection.sendUTF(JSON.stringify(SUBSCRIBE_LOBBY));
-      }, 1000);
+      }, 1500);
 
-      // Gửi tin nhắn duy trì kết nối định kỳ
+      // Duy trì kết nối
       setInterval(() => {
         if (connection.connected) {
-          connection.sendUTF("2"); // Gửi Ping
+          connection.sendUTF("2");
           connection.sendUTF(JSON.stringify(SUBSCRIBE_TX_RESULT));
           connection.sendUTF(JSON.stringify([7, "Simms", lastEventId, 0, { id: 0 }]));
         }
-      }, 10000);
-
-    }, 500);
+      }, 8000);
+    }, 800);
   });
 
-  wsClient.on('connectFailed', (err) => {
-    console.log("❌ Không thể kết nối:", err);
-    console.log("🔄 Thử lại sau 5 giây...");
-    setTimeout(startWebSocket, 5000);
+  wsClient.on('connectFailed', err => {
+    console.log("❌ Kết nối thất bại:", err);
+    setTimeout(startWebSocket, 5000 * reconnectAttempts);
   });
 
-  // Bắt đầu kết nối
   console.log("🔄 Đang kết nối đến WebSocket...");
   wsClient.connect(WS_URL, null, null, HEADERS);
 }
 
 // ================== MÁY CHỦ HTTP ==================
 function startHttpServer() {
-  const server = http.createServer((req, res) => {
-    // Cấu hình CORS
+  http.createServer((req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    if (req.method === "OPTIONS") return res.writeHead(204), res.end();
 
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
-    if (req.url === "/taixiu" && req.method === "GET") {
-      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    if (req.url === "/taixiu") {
+      res.writeHead(200);
       res.end(JSON.stringify(latestResult, null, 2, 'utf8'));
-      console.log(`🌐 Đã trả dữ liệu cho yêu cầu: ${req.url}`);
     } else {
-      res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Không tìm thấy đường dẫn này");
+      res.writeHead(404);
+      res.end(JSON.stringify({error:"Không tìm thấy đường dẫn"}));
     }
-  });
-
-  server.listen(PORT, "0.0.0.0", () => {
-    console.log(`🌐 Máy chủ API đang chạy: http://localhost:${PORT}/taixiu`);
-  });
+  }).listen(PORT, "0.0.0.0", () => console.log(`🌐 API chạy tại cổng: ${PORT}`));
 }
 
-// ================== KHỞI ĐỘNG TOÀN BỘ ==================
-console.log("🚀 Đang khởi động hệ thống 789club...");
-console.log(`📝 Tài khoản: wanglin2019aaand`);
-console.log(`🌐 IP: 113.185.45.88`);
-console.log("-".repeat(50));
-
+// ================== KHỞI ĐỘNG ==================
+console.log("🚀 Khởi động hệ thống 789club...");
 startWebSocket();
 startHttpServer();
