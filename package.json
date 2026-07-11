@@ -1,16 +1,19 @@
 {
   "name": "68gbvn88-bot-unified",
   "version": "1.0.0",
-  "description": "Hệ thống thu thập dữ liệu & API Tài Xỉu cho 68GBVN88",
+  "description": "Hệ thống thu thập dữ liệu & API Tài Xỉu 68GBVN88",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "websocket": "^1.0.35"
+    "ws": "^8.18.0",
+    "puppeteer": "^23.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.6"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0 <=22.x"
   },
   "author": "@tranhoang2286",
   "license": "MIT"
