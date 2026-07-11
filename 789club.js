@@ -1,234 +1,270 @@
-const WebSocket = require('websocket').client;
 const http = require('http');
+const fs = require('fs');
+const { exec, execSync, spawn } = require('child_process');
+const Bot68GB = require('./bot_unified');
 
-// ================== CẤU HÌNH & BIẾN TOÀN CỤC ==================
-const PORT = process.env.PORT || 10000;
+// ─── ĐÃ DÁN TOKEN VÀ WSS URL VÀO ĐÂY ─────────────────────────────────────────
+const TOKEN_HEX = "010000687b22636f6465223a3230302c22737973223a7b22686561727462656174223a31352c2273657269616c697a657222";
+const WS_URL_ENV = "wss://mtsahwkvbim09mnwv.cq.qnwxdhwica.com/";
 
-// Dữ liệu trả về API
-let latestResult = {
-  "Ket_qua": "Chưa có kết quả",
-  "Phien": 0,
-  "Tong": 0,
-  "Xuc_xac_1": 0,
-  "Xuc_xac_2": 0,
-  "Xuc_xac_3": 0,
-  "id": "@tranhoang2286"
+// ─── CẤU HÌNH ────────────────────────────────────────────────────────────────
+const LANDING_URL = "https://68gbvn88.bar";
+const TOKEN_FILE = "token_shared.bin";
+const PORT = parseInt(process.env.PORT || "8080");
+
+const shared = {
+    WS_URL: WS_URL_ENV,
+    PKT_HANDSHAKE: Buffer.from('010000727b22737973223a7b22706c6174666f726d223a226a732d776562736f636b6574222c22636c69656e744275696c644e756d626572223a22302e302e31222c22636c69656e7456657273696f6e223a223061323134383164373436663932663834323865316236646565623736666561227d7d', 'hex'),
+    PKT_HANDSHAKE_ACK: Buffer.from('02000000', 'hex'),
+    PKT_HEARTBEAT: Buffer.from('03000000', 'hex'),
+    PKT_AUTH: Buffer.from('', 'hex') 
 };
 
-let lastEventId = 19;
-let wsClient = null;
-let wsConnection = null;
-let reconnectAttempts = 0;
-const MAX_RECONNECT = 15; // Tăng giới hạn thử lại
-const RECONNECT_BASE = 3000; // Thời gian cơ sở chờ kết nối lại
-
-// ✅ ĐỊA CHỈ MỚI CHÍNH XÁC TỪ BẠN
-const WS_URL = "wss://websocket.atpman.net/websocket2";
-
-// ✅ CẤU HÌNH TIÊU ĐỀ KHỚP VỚI ỨNG DỤNG THẬT
-const HEADERS = {
-  "Host": "websocket.atpman.net",
-  "Origin": "https://play.789club.sx",
-  "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_7_11 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6.1 Mobile/15E148 Safari/604.1",
-  "Accept-Encoding": "gzip, deflate, br",
-  "Accept-Language": "vi-VN,vi;q=0.9",
-  "Pragma": "no-cache",
-  "Cache-Control": "no-cache",
-  "Upgrade": "websocket",
-  "Connection": "Upgrade"
-};
-
-// ⚠️ THAY BẰNG GÓI TIN ĐĂNG NHẬP MỚI NHẤT BẠN LẤY ĐƯỢC TỪ GIAO DIỆN PROXY
-const LOGIN_MESSAGE = [
-  1,
-  "MiniGame",
-  "wanglin2019aaand",
-  "WamgLin2091",
-  {
-    "info": "{\"ipAddress\":\"113.185.45.88\",\"wsToken\":\"THAY_BANG_TOKEN_MOI_CUA_BAN\",\"locale\":\"vi\",\"userId\":\"THAY_BANG_USERID_MOI\",\"username\":\"S8_wanglin2019aaand\",\"timestamp\":\"THAY_BANG_TIMESTAMP\",\"refreshToken\":\"THAY_BANG_REFRESH_TOKEN\"}",
-    "signature": "THAY_BANG_CHUOI_SIGNATURE_MOI_CUA_BAN"
-  }
-];
-
-// Tin nhắn đăng ký nhận dữ liệu
-const SUBSCRIBE_TX_RESULT = [6, "MiniGame", "taixiuUnbalancedPlugin", {"cmd": 2000}];
-const SUBSCRIBE_LOBBY = [6, "MiniGame", "lobbyPlugin", {"cmd": 10001}];
-
-// ================== HÀM HỖ TRỢ ==================
-function printJsonPretty(data, label = "") {
-  if (label) {
-    console.log("\n" + "=".repeat(60));
-    console.log(`📌 ${label}`);
-    console.log("=".repeat(60));
-  }
-  try {
-    if (typeof data === 'object') {
-      console.log(JSON.stringify(data, null, 2, 'utf8'));
+// Nạp token từ TOKEN_HEX đã dán
+if (TOKEN_HEX) {
+    console.log("✅ Using TOKEN_HEX from config");
+    shared.PKT_AUTH = Buffer.from(
+        TOKEN_HEX.replace(/^0x/i, "").replace(/\s+/g, ""),
+        "hex"
+    );
+    shared.SESSION_READY = true;
+    console.log("📝 Token loaded, length:", shared.PKT_AUTH.length, "bytes");
+} else {
+    console.log("Using token_shared.bin");
+    if (fs.existsSync(TOKEN_FILE)) {
+        shared.PKT_AUTH = fs.readFileSync(TOKEN_FILE);
+        shared.SESSION_READY = true;
+        console.log("📝 Token loaded from file");
     } else {
-      console.log(String(data).substring(0, 1000));
+        console.log("⚠️ [CONFIG] Không có Token tĩnh. Cần nạp qua POST /api/token.");
     }
-  } catch (err) {
-    console.log("❌ Lỗi hiển thị:", err.message);
-    console.log(data);
-  }
 }
 
-// ================== XỬ LÝ WEBSOCKET ==================
-function startWebSocket() {
-  if (reconnectAttempts >= MAX_RECONNECT) {
-    console.log("❌ Đã đạt giới hạn kết nối lại, dừng thử. Khởi động lại thủ công nếu cần.");
-    return;
-  }
-  reconnectAttempts++;
-  wsClient = new WebSocket();
+const bot = new Bot68GB(shared);
 
-  // Khi kết nối thành công
-  wsClient.on('connect', (connection) => {
-    console.log("✅✅✅ ĐÃ KẾT NỐI THÀNH CÔNG VỚI websocket2 ✅✅✅");
-    wsConnection = connection;
-    reconnectAttempts = 0; // Đặt lại bộ đếm khi thành công
+const server = http.createServer((req, res) => {
+    const _cors = (code, body = null, type = 'application/json') => {
+        res.writeHead(code, {
+            'Access-Control-Allow-Origin': '*',
+            'Content-Type': type + '; charset=utf-8'
+        });
+        res.end(body ? (typeof body === 'string' ? body : JSON.stringify(body)) : "");
+    };
 
-    // Nhận tin nhắn từ máy chủ
-    connection.on('message', (message) => {
-      if (message.type === 'utf8') {
-        try {
-          const rawText = message.utf8Data;
-          // printJsonPretty(rawText, "📥 TIN NHẮN GỐC"); // Bỏ ghi log nếu không cần
-
-          const data = JSON.parse(rawText);
-
-          // Cập nhật ID sự kiện
-          if (Array.isArray(data) && data.length >= 3 && data[0] === 7 && data[1] === "Simms" && typeof data[2] === "number") {
-            const oldId = lastEventId;
-            lastEventId = data[2];
-            console.log(`🆔 Cập nhật ID: ${oldId} → ${lastEventId}`);
-          }
-
-          // ✅ XỬ LÝ CHÍNH: Kết quả Tài Xỉu cmd=2006
-          if (Array.isArray(data)) {
-            data.forEach(item => {
-              if (item && typeof item === 'object' && item.cmd === 2006) {
-                const sid = Number(item.sid || 0);
-                const d1 = Number(item.d1 || 0);
-                const d2 = Number(item.d2 || 0);
-                const d3 = Number(item.d3 || 0);
-                const tong = d1 + d2 + d3;
-                const ketqua = tong >= 11 ? "Tài" : "Xỉu";
-
-                // Cập nhật dữ liệu toàn cục
-                latestResult = {
-                  "Ket_qua": ketqua,
-                  "Phien": sid,
-                  "Tong": tong,
-                  "Xuc_xac_1": d1,
-                  "Xuc_xac_2": d2,
-                  "Xuc_xac_3": d3,
-                  "id": "@tranhoang2286"
-                };
-
-                console.log("\n🎲 === CÓ KẾT QUẢ MỚI ===");
-                printJsonPretty(latestResult);
-              }
-            });
-          }
-
-        } catch (err) {
-          console.log("⚠️ Lỗi phân tích tin nhắn:", err.message);
-        }
-      }
-    });
-
-    // Khi kết nối đóng
-    connection.on('close', (code, desc) => {
-      console.log(`🔌 Kết nối đóng | Mã: ${code} | Lý do: ${desc || "Không rõ"}`);
-      const waitTime = RECONNECT_BASE * reconnectAttempts;
-      console.log(`🔄 Đang kết nối lại sau ${waitTime/1000} giây...`);
-      setTimeout(startWebSocket, waitTime);
-    });
-
-    // Khi có lỗi
-    connection.on('error', err => {
-      console.log("❌ Lỗi kết nối:", err.message);
-    });
-
-    // === GỬI GÓI TIN ĐĂNG NHẬP & ĐĂNG KÝ ===
-    setTimeout(() => {
-      console.log("📤 Gửi yêu cầu đăng nhập...");
-      connection.sendUTF(JSON.stringify(LOGIN_MESSAGE));
-
-      // Đợi một chút rồi đăng ký nhận dữ liệu
-      setTimeout(() => {
-        console.log("📤 Đăng ký nhận kết quả Tài Xỉu...");
-        connection.sendUTF(JSON.stringify(SUBSCRIBE_TX_RESULT));
-        console.log("📤 Đăng ký thông tin phòng chơi...");
-        connection.sendUTF(JSON.stringify(SUBSCRIBE_LOBBY));
-      }, 1200);
-
-      // === GỬI TIN DUY TRÌ KẾT NỐI ĐỊNH KỲ ===
-      setInterval(() => {
-        if (connection.connected) {
-          connection.sendUTF("2"); // Tin nhắn Ping giữ kết nối
-          connection.sendUTF(JSON.stringify(SUBSCRIBE_TX_RESULT));
-          connection.sendUTF(JSON.stringify([7, "Simms", lastEventId, 0, { id: 0 }]));
-        }
-      }, 8000); // Gửi mỗi 8 giây
-
-    }, 600);
-  });
-
-  // Khi kết nối thất bại
-  wsClient.on('connectFailed', err => {
-    console.log("❌❌❌ KẾT NỐI THẤT BẠI:", err.message);
-    const waitTime = RECONNECT_BASE * reconnectAttempts;
-    console.log(`🔄 Thử lại sau ${waitTime/1000} giây...`);
-    setTimeout(startWebSocket, waitTime);
-  });
-
-  // Bắt đầu kết nối
-  console.log(`🔄 Đang kết nối đến: ${WS_URL}`);
-  wsClient.connect(WS_URL, null, null, HEADERS);
-}
-
-// ================== MÁY CHỦ HTTP CUNG CẤP API ==================
-function startHttpServer() {
-  const server = http.createServer((req, res) => {
-    // Cấu hình CORS hoàn chỉnh
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-
-    // Xử lý yêu cầu kiểm tra quyền truy cập
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
-    // Đường dẫn chính trả kết quả
-    if (req.url === "/taixiu" && req.method === "GET") {
-      res.writeHead(200);
-      res.end(JSON.stringify(latestResult, null, 2, 'utf8'));
-      console.log(`🌐 Đã trả dữ liệu cho yêu cầu: ${req.url}`);
+    if (req.method === 'POST' && (req.url === '/api/token')) {
+        let body = '';
+        req.on('data', c => body += c);
+        req.on('end', () => {
+            try {
+                const data = JSON.parse(body);
+                const hex = data.token.replace(/b'|'|\\x| /g, "");
+                shared.PKT_AUTH = Buffer.from(hex, 'hex');
+                fs.writeFileSync(TOKEN_FILE, shared.PKT_AUTH);
+                shared.SESSION_READY = true;
+                if (bot.ws) bot.ws.close();
+                else bot.run(LANDING_URL);
+                _cors(200, { status: "ok" });
+            } catch (e) { _cors(400, { error: e.message }); }
+        });
+    } else if (req.url === '/api/68gb/txhu') {
+        _cors(200, bot.txhu.last_result || { error: "No data" });
+    } else if (req.url === '/api/68gb/history/txhu') {
+        _cors(200, bot.txhu.history.slice().reverse());
+    } else if (req.url === '/api/68gb/txmd5' || req.url === '/api/data') {
+        _cors(200, bot.md5.last_result || { error: "No data" });
+    } else if (req.url === '/api/68gb/history/txmd5' || req.url === '/api/history') {
+        _cors(200, bot.md5.history.slice().reverse());
+    } else if (req.url === '/' || req.url === '/index.html') {
+        _cors(200, getLandingPage(bot.isAlive()), 'text/html');
     } else {
-      res.writeHead(404);
-      res.end(JSON.stringify({ error: "Đường dẫn không tồn tại", status: 404 }));
+        _cors(404, { error: "Not Found" });
     }
-  });
+});
 
-  // Lắng nghe trên tất cả địa chỉ mạng, phù hợp với Render
-  server.listen(PORT, "0.0.0.0", () => {
-    console.log(`\n🌐🌐🌐 MÁY CHỦ API ĐÃ CHẠY THÀNH CÔNG 🌐🌐🌐`);
-    console.log(`📍 Địa chỉ: http://localhost:${PORT}/taixiu`);
-    console.log(`📍 Trên Render: https://<tên-dự-án>.onrender.com/taixiu`);
-    console.log("=".repeat(60));
-  });
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 [SERVER] Unified API on Port ${PORT}`);
+    console.log(`🌐 [WS_URL] Using: ${shared.WS_URL}`);
+    
+    if (shared.SESSION_READY) {
+        console.log("✅ [INIT] Token sẵn sàng. Khởi động Bot...");
+        bot.run(LANDING_URL);
+    } else {
+        console.log("🆕 [INIT] Chưa có Token. Đang chờ nạp qua API...");
+    }
+});
+
+function getLandingPage(botStatus) {
+    return `
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>68GB Bot Dashboard - Premium AI</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0b10;
+            --card: rgba(255, 255, 255, 0.05);
+            --accent: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+            --text: #f8fafc;
+            --secondary: #94a3b8;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            background: var(--bg); 
+            color: var(--text); 
+            font-family: 'Outfit', sans-serif;
+            overflow-x: hidden;
+            background-image: radial-gradient(circle at 50% 50%, #1e1b4b 0%, #0a0b10 100%);
+            min-height: 100vh;
+        }
+
+        .container { max-width: 1000px; margin: 0 auto; padding: 40px 20px; }
+
+        header { text-align: center; margin-bottom: 60px; animation: fadeInDown 1s ease; }
+        h1 { font-size: 3rem; font-weight: 800; margin-bottom: 10px; background: var(--accent); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .status-badge { display: inline-flex; align-items: center; padding: 6px 16px; border-radius: 999px; background: ${botStatus ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)'}; color: ${botStatus ? '#4ade80' : '#f87171'}; font-weight: 600; border: 1px solid ${botStatus ? '#4ade8044' : '#f8717144'}; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; margin-right: 8px; box-shadow: 0 0 10px currentColor; }
+
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 30px; margin-bottom: 50px; }
+        .card { background: var(--card); backdrop-filter: blur(12px); border-radius: 24px; padding: 30px; border: 1px solid rgba(255,255,255,0.08); transition: transform 0.3s ease, box-shadow 0.3s ease; }
+        .card:hover { transform: translateY(-5px); box-shadow: 0 20px 40px rgba(0,0,0,0.4); border-color: rgba(99, 102, 241, 0.3); }
+
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; }
+        .card-title { font-size: 1.5rem; font-weight: 700; color: #fff; }
+        .result-val { font-size: 2.5rem; font-weight: 800; margin: 15px 0; letter-spacing: -1px; }
+        .result-dice { font-size: 1.2rem; color: var(--secondary); letter-spacing: 5px; }
+        .phien { color: #6366f1; font-weight: 600; font-family: monospace; }
+
+        .controls { display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; }
+        .btn { padding: 14px 28px; border-radius: 16px; border: none; font-weight: 600; cursor: pointer; transition: all 0.2s ease; text-decoration: none; display: inline-flex; align-items: center; font-family: 'Outfit', sans-serif; font-size: 1rem; }
+        .btn-primary { background: var(--accent); color: white; box-shadow: 0 10px 20px rgba(168, 85, 247, 0.3); }
+        .btn-primary:hover { transform: scale(1.05); box-shadow: 0 15px 25px rgba(168, 85, 247, 0.4); }
+        .btn-secondary { background: rgba(255,255,255,0.05); color: white; border: 1px solid rgba(255,255,255,0.1); }
+        .btn-secondary:hover { background: rgba(255,255,255,0.1); }
+
+        .api-links { margin-top: 60px; text-align: center; }
+        .api-links h2 { margin-bottom: 25px; font-weight: 600; }
+        .link-chip { display: inline-block; padding: 10px 20px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; margin: 5px; color: var(--secondary); text-decoration: none; transition: 0.2s; }
+        .link-chip:hover { border-color: #6366f1; color: #fff; }
+
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .loading-bar { height: 2px; width: 100%; background: rgba(255,255,255,0.05); position: fixed; top: 0; left: 0; }
+        .loading-progress { height: 100%; width: 0%; background: var(--accent); transition: width 0.3s; }
+
+        footer { text-align: center; margin-top: 80px; color: var(--secondary); font-size: 0.9rem; padding-bottom: 40px; }
+        
+        .tai { color: #f87171; }
+        .xiu { color: #60a5fa; }
+    </style>
+</head>
+<body>
+    <div class="loading-bar"><div class="loading-progress" id="progress"></div></div>
+    
+    <div class="container">
+        <header>
+            <h1>68GB DASHBOARD</h1>
+            <div class="status-badge">
+                <div class="status-dot"></div>
+                Bot Status: ${botStatus ? 'ACTIVE' : 'DISCONNECTED'}
+            </div>
+        </header>
+
+        <div class="grid">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">TÀI XỈU HŨ</span>
+                    <span class="phien" id="txhu-s">#000000</span>
+                </div>
+                <div id="txhu-res" class="result-val">ĐANG TẢI...</div>
+                <div id="txhu-dice" class="result-dice">0 - 0 - 0</div>
+                <div style="margin-top: 20px;">
+                    <a href="/api/68gb/txhu" class="link-chip">API Live</a>
+                    <a href="/api/68gb/history/txhu" class="link-chip">Lịch sử</a>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">TÀI XỈU MD5</span>
+                    <span class="phien" id="md5-s">#00000</span>
+                </div>
+                <div id="md5-res" class="result-val">ĐANG TẢI...</div>
+                <div id="md5-dice" class="result-dice">0 - 0 - 0</div>
+                <div style="margin-top: 20px;">
+                    <a href="/api/68gb/txmd5" class="link-chip">API Live</a>
+                    <a href="/api/68gb/history/txmd5" class="link-chip">Lịch sử</a>
+                </div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button class="btn btn-primary" onclick="refetchToken()">
+                <svg style="width:20px;height:20px;margin-right:8px" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                Lấy Lại Token Mới
+            </button>
+            <a href="/api/68gb/history/txhu" class="btn btn-secondary">Xem Database</a>
+        </div>
+
+        <div class="api-links">
+            <h2>Hệ Thống API</h2>
+            <a href="/api/68gb/txhu" class="link-chip">/api/68gb/txhu</a>
+            <a href="/api/68gb/txmd5" class="link-chip">/api/68gb/txmd5</a>
+            <a href="/api/68gb/history/txhu" class="link-chip">/api/68gb/history/txhu</a>
+            <a href="/api/68gb/history/txmd5" class="link-chip">/api/68gb/history/txmd5</a>
+        </div>
+
+        <footer>
+            Built by Antigravity AI &bull; Dwong1410 System &bull; 2026
+        </footer>
+    </div>
+
+    <script>
+        async function updateData() {
+            const prog = document.getElementById('progress');
+            prog.style.width = '30%';
+            try {
+                const [txhuRes, md5Res] = await Promise.all([
+                    fetch('/api/68gb/txhu').then(r => r.json()),
+                    fetch('/api/68gb/txmd5').then(r => r.json())
+                ]);
+                prog.style.width = '70%';
+
+                if (!txhuRes.error) {
+                    document.getElementById('txhu-s').innerText = '#' + txhuRes['Phiên trước'];
+                    const resEl = document.getElementById('txhu-res');
+                    resEl.innerText = txhuRes['kết quả'];
+                    resEl.className = 'result-val ' + (txhuRes['kết quả'] === 'TÀI' ? 'tai' : 'xiu');
+                    document.getElementById('txhu-dice').innerText = \`\${txhuRes['xúc xắc 1']} - \${txhuRes['xúc xắc 2']} - \${txhuRes['xúc xắc 3']}\`;
+                }
+
+                if (!md5Res.error) {
+                    document.getElementById('md5-s').innerText = '#' + md5Res['Phiên trước'];
+                    const resEl = document.getElementById('md5-res');
+                    resEl.innerText = md5Res['kết quả'];
+                    resEl.className = 'result-val ' + (md5Res['kết quả'] === 'TÀI' ? 'tai' : 'xiu');
+                    document.getElementById('md5-dice').innerText = \`\${md5Res['xúc xắc 1']} - \${md5Res['xúc xắc 2']} - \${md5Res['xúc xắc 3']}\`;
+                }
+                prog.style.width = '100%';
+                setTimeout(() => prog.style.width = '0%', 400);
+            } catch (e) { console.error(e); }
+        }
+
+        function refetchToken() {
+            if(!confirm('Xác nhận chạy script lấy Token tự động?\\n(Quá trình mất 1-2 phút)')) return;
+            fetch('/api/refetch').then(() => alert('Đã gửi yêu cầu lấy Token! Vui lòng chờ...'));
+        }
+
+        setInterval(updateData, 5000);
+        updateData();
+    </script>
+</body>
+</html>
+    `;
 }
-
-// ================== KHỞI ĐỘNG TOÀN BỘ HỆ THỐNG ==================
-console.log("🚀🚀🚀 KHỞI ĐỘNG HỆ THỐNG 789CLUB - PHIÊN BẢN ĐÃ SỬA 🚀🚀🚀");
-console.log("=".repeat(60));
-
-// Khởi động song song
-startWebSocket();
-startHttpServer();
