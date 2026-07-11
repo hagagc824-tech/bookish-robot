@@ -1,11 +1,10 @@
-
 {
-  "name": "789club-tracker-fixed",
-  "version": "2.0.0",
-  "description": "Công cụ lấy kết quả Tài Xỉu từ 789club - Đã sửa địa chỉ websocket2",
-  "main": "789club.js",
+  "name": "68gbvn88-bot-unified",
+  "version": "1.0.0",
+  "description": "Hệ thống thu thập dữ liệu & API Tài Xỉu cho 68GBVN88",
+  "main": "index.js",
   "scripts": {
-    "start": "node 789club.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "websocket": "^1.0.35"
